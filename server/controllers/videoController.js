@@ -12,7 +12,7 @@ exports.analyzeVideo = async (req, res) => {
     try {
         const videoFile = req.file;
         const videoLink = req.body.videoLink;
-        const responseCount = req.body.responseCount || 3;
+        const responseCount = req.body.responseCount || 1;
 
         if (!videoFile && !videoLink) {
             return res.status(400).json({ error: "No video file or link provided." });
@@ -45,7 +45,7 @@ exports.analyzeVideo = async (req, res) => {
         let result;
 
         // Helper function for retry logic with exponential backoff and smart retry-after
-        async function generateWithRetry(fn, retries = 5, delay = 2000) {
+        async function generateWithRetry(fn, retries = 5, delay = 1000) {
             try {
                 return await fn();
             } catch (error) {
@@ -64,14 +64,9 @@ exports.analyzeVideo = async (req, res) => {
                 }
 
                 if (retries > 0 && (error.status === 429 || error.status === 503)) {
-                    console.log(`Rate limited (429). Retrying in ${Math.ceil(waitTime / 1000)}s... (${retries} retries left)`);
+                    console.log(`Rate limited. Retrying in ${Math.ceil(waitTime / 1000)}s... (${retries} retries left)`);
                     await new Promise(resolve => setTimeout(resolve, waitTime));
-                    // Check if we extracted a specific huge waitTime, if so, maybe reset delay or keep doubling? 
-                    // To be safe, we just pass the original 'delay' * 2 for the fallback geometric growth, 
-                    // ignoring the one-off spike from the API request for the *next* calculation base 
-                    // (unless we want to be very conservative). 
-                    // Let's stick to doubling the *base* delay.
-                    return generateWithRetry(fn, retries - 1, delay * 2);
+                    return generateWithRetry(fn, retries - 1, Math.min(delay * 2, 8000));
                 } else {
                     throw error;
                 }
@@ -93,7 +88,7 @@ exports.analyzeVideo = async (req, res) => {
             let file = await fileManager.getFile(uploadResponse.file.name);
             while (file.state === "PROCESSING") {
                 process.stdout.write(".");
-                await new Promise((resolve) => setTimeout(resolve, 5000)); // 5s wait
+                await new Promise((resolve) => setTimeout(resolve, 2000)); // 2s wait (faster polling)
                 file = await fileManager.getFile(uploadResponse.file.name);
             }
 
@@ -115,7 +110,7 @@ exports.analyzeVideo = async (req, res) => {
                 generationConfig: {
                     responseMimeType: "application/json",
                 }
-            }), 3, 2000);
+            }), 2, 1000);
 
             // Cleanup local file
             fs.unlinkSync(videoFile.path);
@@ -126,20 +121,26 @@ exports.analyzeVideo = async (req, res) => {
                 generationConfig: {
                     responseMimeType: "application/json",
                 }
-            }), 3, 2000);
+            }), 2, 1000);
         }
 
-        const responseText = result.response.text();
-        let jsonString = responseText.trim();
-        if (jsonString.startsWith('```json')) {
-            jsonString = jsonString.replace(/^```json/, '').replace(/```$/, '');
+        try {
+            const responseText = result.response.text();
+            let jsonString = responseText.trim();
+            if (jsonString.startsWith('```json')) {
+                jsonString = jsonString.replace(/^```json/, '').replace(/```$/, '');
+            }
+            const parsedIs = JSON.parse(jsonString);
+            res.json({ results: parsedIs });
+        } catch (parseError) {
+            console.error("Failed to parse model response:", parseError);
+            return res.status(502).json({ error: "Invalid response from model service." });
         }
-        const parsedIs = JSON.parse(jsonString);
-
-        res.json({ results: parsedIs });
 
     } catch (error) {
         console.error("Error analyzing video:", error);
-        res.status(500).json({ error: "Failed to analyze video." });
+        const status = error.status && Number.isInteger(error.status) ? error.status : 500;
+        const message = error.message || "Failed to analyze video.";
+        res.status(status).json({ error: message });
     }
 };

@@ -7,7 +7,7 @@ const VideoUpload = ({ onResults }) => {
     const [videoLink, setVideoLink] = useState('');
     const [channelName, setChannelName] = useState('');
     const [category, setCategory] = useState('');
-    const [responseCount, setResponseCount] = useState(3);
+    const [responseCount, setResponseCount] = useState(1);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
 
@@ -52,7 +52,8 @@ const VideoUpload = ({ onResults }) => {
             onResults(response.data.results);
         } catch (err) {
             console.error(err);
-            setError('Failed to analyze video. Please try again.');
+            const serverMessage = err?.response?.data?.error;
+            setError(serverMessage || err.message || 'Failed to analyze video. Please try again.');
         } finally {
             setLoading(false);
         }
@@ -129,7 +130,14 @@ const VideoUpload = ({ onResults }) => {
                         min="1"
                         max="5"
                         value={responseCount}
-                        onChange={(e) => setResponseCount(parseInt(e.target.value))}
+                        onChange={(e) => {
+                            const v = parseInt(e.target.value, 10);
+                            if (Number.isNaN(v)) {
+                                setResponseCount(1);
+                            } else {
+                                setResponseCount(Math.max(1, Math.min(5, v)));
+                            }
+                        }}
                         className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     />
                 </div>
