@@ -4,6 +4,56 @@ const dotenv = require("dotenv");
 
 dotenv.config();
 
+// Validate remote video links before sending to model to avoid fabricated analysis
+async function isValidVideoLink(link) {
+    try {
+        const parsed = new URL(link);
+        const host = parsed.hostname.toLowerCase();
+
+        // YouTube: use oEmbed to check existence
+        if (host.includes('youtube.com') || host.includes('youtu.be')) {
+            const oembed = `https://www.youtube.com/oembed?url=${encodeURIComponent(link)}&format=json`;
+            const r = await fetch(oembed);
+            return r.ok;
+        }
+
+        // Vimeo: oEmbed endpoint
+        if (host.includes('vimeo.com')) {
+            const oembed = `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(link)}`;
+            const r = await fetch(oembed);
+            return r.ok;
+        }
+
+        // For direct video links or other hosts, try a HEAD request first
+        try {
+            let r = await fetch(link, { method: 'HEAD' });
+            if (r.ok) {
+                const ct = (r.headers.get('content-type') || '').toLowerCase();
+                if (ct.startsWith('video/')) return true;
+                // If it's HTML, we cannot assume it's a direct video file
+                if (!ct.includes('text/html')) return false;
+            }
+        } catch (e) {
+            // Some hosts block HEAD; continue to GET-range fallback
+        }
+
+        // Fallback: request first byte to check content-type
+        try {
+            const r2 = await fetch(link, { method: 'GET', headers: { Range: 'bytes=0-0' } });
+            if (r2.ok) {
+                const ct2 = (r2.headers.get('content-type') || '').toLowerCase();
+                return ct2.startsWith('video/');
+            }
+        } catch (e) {
+            return false;
+        }
+
+        return false;
+    } catch (err) {
+        return false;
+    }
+}
+
 // Model configuration (Switched to Gemini 1.5 Flash for stability)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
@@ -13,6 +63,14 @@ exports.analyzeVideo = async (req, res) => {
         const videoFile = req.file;
         const videoLink = req.body.videoLink;
         const responseCount = req.body.responseCount || 1;
+
+        // If a link was provided, verify it's reachable/valid before asking the model
+        if (videoLink) {
+            const ok = await isValidVideoLink(videoLink);
+            if (!ok) {
+                return res.status(400).json({ error: 'Video link unreachable or not a supported video URL.' });
+            }
+        }
 
         if (!videoFile && !videoLink) {
             return res.status(400).json({ error: "No video file or link provided." });
